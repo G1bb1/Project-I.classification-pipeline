@@ -1,4 +1,25 @@
-"""Part 2a -- one KDE map per class, on the lookup
+'''
+File:
+kde_class_contours.py
+
+Description:
+This program creates a KDE map per class on a lookup
+grid. The peaks of each class is then normalized.That
+data is then saved on a surfaces.npz file which
+is used in later stages.
+
+All these 3 maps are saved on the class_surfaces_continuous.pdf.
+
+Note:
+- At the very end of this file, be aware that the save file path
+  is relative to the current working directory.
+
+___________________________________________________
+Author      Date                Comment
+Gib M.      Sept. 23th, 2026     rev 1
+'''
+
+""" on the lookup
 grid, peak-normalised.
 
 Saves surfaces.npz, which every later stage reads.
