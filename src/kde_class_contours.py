@@ -18,12 +18,6 @@ ___________________________________________________
 Author      Date                Comment
 Gib M.      Sept. 23th, 2026     rev 1
 '''
-
-""" on the lookup
-grid, peak-normalised.
-
-Saves surfaces.npz, which every later stage reads.
-"""
 import matplotlib.pyplot as plt
 import numpy as np
 from pipeline_common import (load_split_scaled,
