@@ -1,3 +1,4 @@
+# DBSCAN cluster per training point (eps=0.06, min_samples=8); -1 = noise
 0
 1
 0
