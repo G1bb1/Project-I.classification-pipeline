@@ -25,6 +25,8 @@ Gib M.      Oct. 14th, 2026     rev 2 -- added the DATASET switch, sensor
                                 per-dataset paths (datasets/ and outputs/
                                 folders), shared BANDWIDTH and probe points;
                                 rewrote header and comments.
+Gib M.      Oct. 15th, 2026     rev 3 -- added CLASS_NAMES (cluster number
+                                to name) for model.h and the device check.
 '''
 import os
 
@@ -37,7 +39,7 @@ from sklearn.neighbors import KernelDensity
 # ---------------------------------------------------------------------------
 
 # Which data every stage runs on -- the one switch to flip.
-DATASET = "sensor"  # "sim" or "sensor"
+DATASET = "sim"  # "sim" or "sensor"
 
 # Inputs live in datasets/<DATASET>/, results in outputs/<DATASET>/.
 DATA_DIR = f"../datasets/{DATASET}/"
@@ -57,6 +59,9 @@ if DATASET == "sim":
     # A point that must come back "unknown": the ring centre has data all
     # around it, but no class was ever trained there.
     UNKNOWN_RAW = [4.8, 1.6]
+    # DBSCAN only numbers its clusters; names by cluster number, read off
+    # each cluster's centroid. Recheck if the DBSCAN settings change.
+    CLASS_NAMES = ("lower crescent", "ring", "upper crescent")
 else:
     # The peer's readings for all four light conditions with the label
     # column removed -- the pipeline's input, so it never sees the labels.
@@ -68,6 +73,10 @@ else:
     PROBES_RAW = ([0.0, 140.0], [0.0, 226.0], [0.0, 380.0], [3500.0, 28600.0])
     # Brighter than any indoor light but far dimmer than sun: "unknown".
     UNKNOWN_RAW = [1000.0, 2000.0]
+    # Names by cluster number, read off each cluster's centroid (never from
+    # the labels). They match the peer's labels so device results can be
+    # scored against them.
+    CLASS_NAMES = ("shade", "sun", "fluorescent", "LED")
 
 os.makedirs(FIG_DIR, exist_ok=True)
 
