@@ -17,6 +17,7 @@ Note:
 ___________________________________________________
 Author      Date                Comment
 Gib M.      Oct. 14th, 2026     rev 1
+Gib M.      Oct. 15th, 2026     rev 2 -- added generate_model_header.py.
 '''
 import runpy
 
@@ -29,6 +30,7 @@ STAGES = [
     "kde_class_contours.py",   # Part 2  per-class maps -> surfaces.npz
     "kde_total_surface.py",    # Part 2b 3-D decision surface
     "discretize_surfaces.py",  # Part 3  bytes and flash cost
+    "generate_model_header.py",  # Part 3  model.h for the firmware
     "classify_skeleton.py",    # Part 4  hand-written lookup
     "classify_point.py",       # Part 4  the online path
     "evaluate_test.py",        # Part 4  spend the test set once
