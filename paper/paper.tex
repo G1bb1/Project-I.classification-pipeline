@@ -1,0 +1,331 @@
+\documentclass[conference]{IEEEtran}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}        % equation, align
+\usepackage{graphicx}       % \includegraphics
+\usepackage{booktabs}       % \toprule, \midrule, \bottomrule
+\usepackage{tabularx}       % tables that fill the column
+\usepackage{algorithm}      % the floating box
+\usepackage{algpseudocode}  % \State, \For, \If
+\usepackage{hyperref}       % load last
+
+% Figures come from the simulated-data run. paper.tex lives in paper/, so
+% ../ goes up to the project root. To switch to the sensor run later,
+% change only this line to {../outputs/Sensor/figures/}.
+\graphicspath{{../outputs/sim/figures/}}
+
+% Let floats share pages with text instead of each taking a page of its own.
+\renewcommand{\topfraction}{0.9}         % up to 90% of a column can be floats
+\renewcommand{\bottomfraction}{0.8}
+\renewcommand{\textfraction}{0.1}        % a page needs only 10% text
+\renewcommand{\floatpagefraction}{0.8}   % float-only pages must be 80% full
+\renewcommand{\dbltopfraction}{0.9}      % same rules for figure* (full width)
+\renewcommand{\dblfloatpagefraction}{0.8}
+\setcounter{topnumber}{3}
+\setcounter{dbltopnumber}{2}
+\setcounter{totalnumber}{4}
+
+\title{A Table-Lookup Density Classifier for Unlabelled,\\Non-Convex Classes on a Microcontroller}
+\author{\IEEEauthorblockN{Gib Macarine}
+        \IEEEauthorblockA{Department of Computer Engineering\\
+                          Vanier College}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We propose a classification pipeline for devices with kilobytes of flash and no labelled training data. Offline, DBSCAN discovers the classes, a per-class Gaussian kernel density estimate maps each one, and each map is stored as one byte per cell on a fixed $G\times G$ grid. Online, a query is classified with $K$ byte reads and a reject threshold that answers \textsc{unknown} outside every learned region. With $K=3$ classes on a $16\times16$ grid the model is 768 bytes, independent of training-set size, and on 206 held-out test points it reproduces the continuous density model's decision in 100\% of cases.
+\end{abstract}
+
+%=====================================================================
+\section{Proposed Pipeline}
+%=====================================================================
+
+The pipeline has two regimes. The \emph{offline} path runs once on a workstation: both features are min--max scaled onto $[0,1]^2$ using the training data's range, DBSCAN groups the training points by density into $K$ classes (and labels the rest noise), a Gaussian KDE is fitted to each class, each map is normalised to its own peak, and each is sampled onto a $G\times G$ grid and stored as \texttt{uint8}. Its output is $K$ byte tables plus the four scaling bounds.
+
+The \emph{online} path, Algorithm~\ref{alg:lookup}, is what this paper proposes. It takes the byte tables, the scaling bounds, $G$ and the reject threshold $\tau$ as precomputed inputs. It contains no training data, no kernel evaluation and no distance loop, so its cost is $K$ byte reads and $K$ comparisons regardless of how much data built the tables.
+
+\begin{algorithm}[!bt]
+\caption{Table-lookup classification (online path).}
+\label{alg:lookup}
+\begin{algorithmic}[1]
+\Require Raw query point $(x, y)$
+\Require Byte tables $Q_1,\dots,Q_K$, each $G\times G$, values $0$--$255$
+\Require Training bounds $(x_{\min},x_{\max})$, $(y_{\min},y_{\max})$
+\Require Grid size $G$; reject threshold $\tau$
+\Ensure Class $\hat{c}$ with distribution $p$, or \textsc{unknown}
+\State $\tilde{x} \gets \dfrac{x - x_{\min}}{x_{\max}-x_{\min}}$,\quad $\tilde{y} \gets \dfrac{y - y_{\min}}{y_{\max}-y_{\min}}$
+\State $\text{col} \gets \lfloor \tilde{x}\,G \rfloor$, clipped to $[0, G-1]$
+\State $\text{row} \gets \lfloor \tilde{y}\,G \rfloor$, clipped to $[0, G-1]$
+\For{$c \gets 1$ \textbf{to} $K$}
+    \State $v_c \gets Q_c[\text{row},\text{col}]\,/\,255$ \Comment{one byte read}
+\EndFor
+\State $\hat{c} \gets \arg\max_c v_c$ \Comment{ties: lowest $c$}
+\If{$v_{\hat{c}} < \tau$}
+    \State \Return \textsc{unknown} \Comment{outside every learned region}
+\EndIf
+\State $S \gets \sum_{k=1}^{K} v_k$ \Comment{$S \geq \tau > 0$}
+\For{$c \gets 1$ \textbf{to} $K$}
+    \State $p_c \gets v_c / S$
+\EndFor
+\State \Return $\hat{c}$, $p$
+\end{algorithmic}
+\end{algorithm}
+
+Two choices in Algorithm~\ref{alg:lookup} are deliberate. First, it uses nearest-cell lookup ($K$ reads) rather than bilinear blending of the four surrounding cells ($4K$ reads). On the held-out query in Section~\ref{sec:query}, both lookups return the same class with the same distribution. Bilinear blending would move the decision boundary by a fraction of a cell, but in this data the classes never touch, so that boundary is only the reject edge. Four times the reads is not worth paying for that. Second, the reject test on line~8 is not optional: without it, the algorithm returns a confident-looking label at every point in the plane, including regions no training data ever reached (Section~\ref{sec:evidence}).
+
+%=====================================================================
+\section{Application}
+%=====================================================================
+% TODO: one specific device. Flash budget, why no labels, why classes aren't round.
+
+%=====================================================================
+\section{Method and Setup}
+%=====================================================================
+\subsection{Dataset and Split}
+The data are synthetic and reproducible: a generator with fixed seed 20250903 produces two crescents (340 and 300 points, opening in opposite directions), a ring (300 points), and 90 uniformly scattered background points, for 1030 two-feature points in all. They are split once, with \texttt{train\_test\_split} at the same seed, into training (60\%, 618 points), validation (20\%, 206) and test (20\%, 206) subsets. The training set alone builds the model (clustering, KDE fitting, discretization). The validation set tunes the bandwidth. The test set is read once, on the frozen design, so the number it produces was not used to make any choice.
+
+\subsection{Scaling and Clustering}
+
+% Placed here, a section before it is discussed, so it lands near Section IV.
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.75\textwidth]{clustered_space.pdf}
+\caption{The same 618 training points clustered two ways. Left: DBSCAN ($\varepsilon=0.06$, \texttt{min\_samples}~$=8$) keeps both crescents and the ring intact and marks background points as noise ($\times$). Right: k-means with $k=3$ assigns every point, noise included, to its nearest centre.}
+\label{fig:clusters}
+\end{figure*}
+
+Each feature is min--max scaled onto $[0,1]$ using the \emph{training} range. Those four bounds ship with the model, and validation, test and query points are scaled by them, not by their own range. DBSCAN then runs on the scaled training points with $\varepsilon = 0.06$ and \texttt{min\_samples}~$=8$. It finds three clusters of 209, 198 and 178 points and labels 33 points noise (Fig.~\ref{fig:clusters}). These invented labels are what every later stage treats as ground truth. Noise points are excluded from the KDE stage.
+
+The result is sensitive to $\varepsilon$. At $\varepsilon=0.03$ the neighbourhood is too small for the sparser stretches of each shape to contain enough core points, so density chains break and the shapes fragment into 15 clusters with 82 noise points. At $\varepsilon=0.30$ the radius spans the gaps between shapes, chains bridge them through background points, and everything merges into a single cluster.
+
+Table~\ref{tab:eps} shows why $\varepsilon$ is reported in scaled units. The raw features span several units, so a raw $\varepsilon$ is a much smaller fraction of the data's extent. The value that finds the three shapes when scaled ($0.06$) finds no core points at all when raw, and every training point becomes noise. The value that over-merges when scaled ($0.30$) is still \emph{fragmenting} when raw, into 10 clusters and 50 noise points, much like the scaled $\varepsilon=0.03$ run. No single $\varepsilon$ works in both spaces. Scaling turns $\varepsilon=0.06$ into ``6\% of the feature range'', a quantity that can be stated and carried to another dataset. Without scaling, if the features were a current in mA and a temperature in $^\circ$C, the larger-ranged feature would dominate every distance and no $\varepsilon$ could serve both axes.
+
+\begin{table}[!bt]
+\centering
+\caption{DBSCAN on the 618 training points, \texttt{min\_samples}~$=8$: clusters / noise points for the same $\varepsilon$ in raw and scaled feature space.}
+\label{tab:eps}
+\begin{tabularx}{\linewidth}{@{}X r r@{}}
+\toprule
+Features & $\varepsilon = 0.06$ & $\varepsilon = 0.30$ \\
+\midrule
+Raw              & 0 / 618 & 10 / 50 \\
+Scaled $[0,1]^2$ & 3 / 33  & 1 / 0   \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Density Maps and Bandwidth}
+For each class $c$, a Gaussian KDE is fitted to that class's training points only, and its map is divided by its own maximum so every class peaks at 1.0. Without that normalisation, the class with the most training points would have the highest raw density everywhere and would win every close decision. The 33 noise points are left out of every fit. Folded into a class, each would add an isolated bump of height about $1/n_c$ wherever it happened to land. The class would then claim regions it never occupied, and the background would rise toward $\tau$, which weakens the reject test.
+
+The bandwidth $h$ is the one parameter that changes the maps most, so it was chosen by a stated criterion, not by eye. For each candidate $h$, the per-class KDEs were fitted on the training split and the 206 validation points were scored by their mean log-likelihood under the resulting mixture (Table~\ref{tab:bandwidth}). Validation selects $h=0.05$. As a sanity bracket, Silverman's rule of thumb gives a reference bandwidth for $n$ points in $d$ dimensions:
+\begin{equation}
+    h \approx \hat{\sigma}\left(\frac{4}{(d+2)\,n}\right)^{1/(d+4)}.
+    \label{eq:silverman_general}
+\end{equation}
+With $d=2$ features, the fraction becomes $4/(4n)=1/n$ and the exponent becomes $1/6$, so \eqref{eq:silverman_general} reduces to
+\begin{equation}
+    h \approx \hat{\sigma}\,n^{-1/6}.
+    \label{eq:silverman}
+\end{equation}
+Here $n=n_c$ is the number of training points in the class being fitted. Because scikit-learn's KDE uses one bandwidth for both axes, $\hat{\sigma}$ is the mean of the class's sample standard deviations along the two scaled features, $\hat{\sigma}=(\hat{\sigma}_1+\hat{\sigma}_2)/2$. For class~0 (lower crescent, $n_0=209$, $\hat{\sigma}_1=0.1148$, $\hat{\sigma}_2=0.0495$):
+\begin{align}
+    \hat{\sigma} &= \frac{0.1148+0.0495}{2} = 0.0822, \notag\\
+    h_0 &\approx 0.0822 \times 209^{-1/6} = 0.0822 \times 0.4105 = 0.034. \notag
+\end{align}
+Table~\ref{tab:silverman} applies the same steps to all three classes.
+
+\begin{table}[!bt]
+\centering
+\caption{Silverman's rule \eqref{eq:silverman} per class, on the scaled training points.}
+\label{tab:silverman}
+\begin{tabularx}{\linewidth}{@{}X r r r r r@{}}
+\toprule
+Class & $n_c$ & $\hat{\sigma}_1$ & $\hat{\sigma}_2$ & $\hat{\sigma}$ & $h$ \\
+\midrule
+0 (lower crescent) & 209 & 0.1148 & 0.0495 & 0.0822 & 0.034 \\
+1 (ring)           & 198 & 0.1512 & 0.1785 & 0.1648 & 0.068 \\
+2 (upper crescent) & 178 & 0.1161 & 0.0493 & 0.0827 & 0.035 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Silverman's rule therefore brackets the bandwidth between $0.034$ (the thin crescents) and $0.068$ (the ring, whose points spread over a larger area). The validation-selected $h=0.05$ lies inside this range, so the data-driven choice agrees with the rule of thumb. The test set played no part in this choice.
+
+\begin{table}[!bt]
+\centering
+\caption{Bandwidth selection on the validation split (206 points). Each $h$ is fitted on training data only.}
+\label{tab:bandwidth}
+\begin{tabularx}{\linewidth}{@{}X r@{}}
+\toprule
+Bandwidth $h$ & Validation mean log-likelihood \\
+\midrule
+0.03          & 2.356 \\
+0.04          & 2.479 \\
+\textbf{0.05} & \textbf{2.562} \\
+0.06          & 2.552 \\
+0.08          & 2.445 \\
+0.10          & 2.328 \\
+0.12          & 2.228 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Grid, Storage and Threshold}
+Each normalised map $g_c$ is evaluated once at the centres of a $G\times G$ grid with $G=16$, and each cell is stored as one byte:
+\begin{equation}
+    q_{ij} = \operatorname{round}\!\left(255\,g_c(\mathbf{x}_{ij})\right), \qquad \tilde{g}_c(\mathbf{x}_{ij}) = \frac{q_{ij}}{255}.
+    \label{eq:quant}
+\end{equation}
+Because \eqref{eq:quant} rounds to the nearest of 256 levels, a stored value can be wrong by at most half a level:
+\begin{equation}
+    \left|\tilde{g}_c - g_c\right| \leq \frac{1}{2\cdot255} \approx 0.00196 = 0.196\%\ \text{of peak}.
+    \label{eq:quant_bound}
+\end{equation}
+The shipped model is $K$ tables plus the four scaling bounds (16 bytes as \texttt{float32}). Its flash cost for $b$ bytes per cell is
+\begin{align}
+    \text{flash} &= K \cdot G^2 \cdot b \notag\\
+                 &= 3 \cdot 16^2 \cdot 1 = 768\ \text{bytes},
+    \label{eq:flash}
+\end{align}
+and each query reads $K=3$ of those bytes. The reject threshold is $\tau=0.12$, set by hand rather than derived (Section~\ref{sec:limits}).
+
+%=====================================================================
+\section{Evidence}
+\label{sec:evidence}
+%=====================================================================
+The model is built on training data, tuned on validation, and checked on test data. Each artifact below is introduced by the claim it supports.
+
+% Full-width figures go at the top of the page AFTER the one where their
+% source appears, so this one is placed early, ahead of the text citing it.
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.78\textwidth]{class_surfaces_continuous.pdf}\\[-2pt]
+\small (a) Continuous: the fitted KDE on a fine display grid, with each class's training points.\\[4pt]
+\includegraphics[width=0.78\textwidth]{class_surfaces_discretized.pdf}\\[-2pt]
+\small (b) Stored: the same maps as the \texttt{uint8} tables that ship, $16\times16$ cells per class.
+\caption{The three per-class maps at $h=0.05$, each normalised to its own peak, before and after storage. Row (b) is the complete model: 768 bytes, with no training points, kernel or bandwidth in it. The difference between the rows is the grid, not the bytes. The ring's centre stays empty in both.}
+\label{fig:maps}
+\end{figure*}
+
+\subsection{The Classes Are Discoverable Without Labels}
+Fig.~\ref{fig:clusters} (training split) shows DBSCAN recovering both crescents and the ring intact without being told how many classes exist, and labelling the scattered background as noise. k-means, given the correct $k=3$, has no noise label: every background point is forced into a class. Points at the left edge join the upper crescent, points inside the ring join the ring, and points below the lower crescent join it. Its decision rule, ``nearest of $k$ centres'', can only cut the plane with straight lines, and the centres it needs sit in the wrong places: off each crescent, and in the empty hole of the ring. On this well-separated layout the shapes happen to stay whole. Shapes that interlock or sit closer together would be cut across, at any $k$. A density method has no such limit, which is why the pipeline starts with DBSCAN.
+
+\subsection{The Density Maps Are Well Formed}
+Fig.~\ref{fig:maps}(a) shows each class's normalised KDE at $h=0.05$, on a fine $200\times200$ display grid, before the lookup grid coarsens it. Each map follows its own shape: two thin crescents, and a ring whose centre stays empty. Fig.~\ref{fig:decision} combines them into the quantity the classifier actually compares, the largest of the three maps at each location. It rises well above $\tau$ along all three shapes and drops below it over the background and inside the ring. A density method can represent the ring as a crater with an empty middle. A centre-based method has no way to express that.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth]{total_distribution.pdf}
+\caption{Continuous decision surface: the largest of the three normalised maps at each location ($h=0.05$), with the plane $z=\tau=0.12$. The dotted curve is where the surface meets the plane, and the solid curve below is that boundary projected onto the features. Filled points were clustered; hollow points are DBSCAN noise. The ring's centre dips below $\tau$.}
+\label{fig:decision}
+\end{figure}
+
+\subsection{The Bandwidth Matters, and Was Not Chosen by Eye}
+Refitting at the ends of the sweep shows how much the maps depend on $h$. At $h=0.03$ each shape becomes a thin band and the ring's hole looks wider. At $h=0.12$ the crescents swell into blobs, and the ring's hole fills (Fig.~\ref{fig:wideh}) to roughly half of the ring's peak density. That is well above $\tau=0.12$, so a query at the ring's centre would be confidently labelled ``ring''. The reject result reported below therefore depends directly on the bandwidth. It holds at the validation-selected $h$, not at any $h$. The validation curve in Table~\ref{tab:bandwidth} is flat near its peak ($h=0.05$ and $0.06$ differ by 0.01), so small changes in the selected value would not change the maps much.
+
+\begin{figure}[!t]
+\centering
+% trim= left bottom right top (pt): keeps only the middle (ring) panel
+\begin{minipage}{0.48\columnwidth}\centering
+\includegraphics[trim=178 0 204 0,clip,width=\linewidth]{class_surfaces_continuous.pdf}\\
+\small (a) $h=0.05$ (selected)
+\end{minipage}\hfill
+\begin{minipage}{0.48\columnwidth}\centering
+\includegraphics[trim=178 0 204 0,clip,width=\linewidth]{class_surfaces_continuous_wide_bandwidth.pdf}\\
+\small (b) $h=0.12$
+\end{minipage}
+\caption{The ring's map at the selected bandwidth and at the largest in the sweep, same grey scale as Fig.~\ref{fig:maps}. At $h=0.12$ the hole fills to about half of the ring's peak, well above $\tau$.}
+\label{fig:wideh}
+\end{figure}
+
+\subsection{The Model Survives Being Stored as Bytes}
+\label{sec:storage}
+Table~\ref{tab:footprint} is the cost side of the storage decision. Every row holds the same $16\times16$ values per class and differs only in bytes per cell, so the spread from \texttt{uint8} to \texttt{float64} is a factor of eight. The \texttt{uint8} total agrees with \eqref{eq:flash}.
+
+\begin{table}[!bt]
+\centering
+\caption{Flash cost of the stored maps by format, $K=3$. All rows hold the same values. The scaling bounds add 16 bytes to every row.}
+\label{tab:footprint}
+\begin{tabularx}{\linewidth}{@{}X r r r r@{}}
+\toprule
+ & & \multicolumn{2}{c}{$G=16$} & $G=32$ \\
+\cmidrule(lr){3-4}\cmidrule(l){5-5}
+Storage & B/cell & Per class & All $K$ & All $K$ \\
+\midrule
+\texttt{uint8}   & 1 & 256  & 768  & 3072  \\
+\texttt{uint16}  & 2 & 512  & 1536 & 6144  \\
+\texttt{float32} & 4 & 1024 & 3072 & 12288 \\
+\texttt{float64} & 8 & 2048 & 6144 & 24576 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The accuracy side is one number. Over all 768 stored cells, the largest difference between a stored value and the \texttt{float64} map it came from is 0.195\% of peak, just under the bound in \eqref{eq:quant_bound}. That is an absolute error of about $0.002$, roughly sixty times smaller than $\tau=0.12$. Quantization can therefore change a decision only where two classes' values are within about $0.004$ of each other, or where the winning value is within $0.002$ of $\tau$. We ship \texttt{uint8}. It is the smallest row of Table~\ref{tab:footprint}, at 768 bytes plus 16 for the bounds. \texttt{uint16} would double the flash to 1536 bytes to remove an error that is already smaller than any other approximation in the pipeline. Section~\ref{sec:test} tests this choice on held-out data.
+
+Fig.~\ref{fig:maps}(b) shows the stored bytes directly beneath the continuous maps of Fig.~\ref{fig:maps}(a). The visible difference between the two rows is the \emph{grid}, not the bytes: 0.195\% of peak is smaller than one shade step, while the $16\times16$ grid turns each smooth shape into blocks. Quantization is the cheapest compromise in this design, and the grid is the expensive one. The ring's hole survives the grid, but only just. Its centre cell stores 0, a $2\times2$ block of cells stays near zero (below 5 of 255), and 11 enclosed cells fall below $\tau$. The hole is only three cells wide across its centre row.
+
+Doubling the grid to $G=32$ represents the hole better: 17 cells stay near zero and 45 fall below $\tau$, with seven cells below $\tau$ across the centre row. The cost grows faster than the benefit, though. Flash grows with $G^2$ and resolution only with $G$, so twice the resolution costs four times the flash: 3072 bytes in \texttt{uint8} for $K=3$. Against a fixed flash budget, every doubling of resolution buys a quarter as many classes. We propose $G=16$: at 768 bytes it already keeps the ring's hole as a closed region below $\tau$, and $G=32$ would spend four times the flash on a finer edge for the same decision.
+\subsection{A Held-Out Query Resolves to One Class}
+\label{sec:query}
+Fig.~\ref{fig:query} follows one point through Algorithm~\ref{alg:lookup}. The query is a held-out test point, selected as the one the stored model claims most confidently among test points away from the plot edges. In raw units it is $(6.00, 3.18)$, on the upper-right of the ring, and it falls in cell (row~11, col~13). The three stored bytes there are $(0, 255, 0)$: the ring's table is at its peak and both crescents' tables are empty. The distribution is $(0\%, 100\%, 0\%)$ and the answer is class~1. Bilinear lookup reads the four surrounding cells per class (12 bytes instead of 3) and gives $(0, 221.8, 0)$. That is 13\% of peak lower, because it blends in weaker neighbours, but the distribution and the class are unchanged.
+
+Table~\ref{tab:window} shows why the two lookups can disagree at all. Around the query, the ring's bytes drop from 255 to 68 within a single diagonal cell. At this resolution the stored surface is steep, so the value read depends strongly on which cell a point lands in. Bilinear blending matters most where that steepness crosses $\tau$ (about 31 of 255): along the inner and outer rims of each shape, where a point near a cell edge could flip between a class and \textsc{unknown}. Deep inside a shape, as here, it changes nothing.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=\columnwidth]{decision_map.pdf}
+\caption{One held-out test point classified. Left: the $16\times16$ grid, with the query (star) and its cell highlighted. Right: the normalised distribution $p_c$ at that cell. The tallest bar is the $\arg\max$, class~1. The dashed line marks $\tau$, which Algorithm~\ref{alg:lookup} compares against the stored value $v_{\hat{c}}$ rather than $p_{\hat{c}}$. Here both equal 1.0, because only the ring's table is non-zero.}
+\label{fig:query}
+\end{figure}
+
+\begin{table}[!bt]
+\centering
+\caption{Stored ring (class~1) bytes in the $3\times3$ window around the query cell (row~11, col~13, centre). Both crescent tables are 0 in all nine cells.}
+\label{tab:window}
+\begin{tabular}{@{}r r r r@{}}
+\toprule
+ & col 12 & col 13 & col 14 \\
+\midrule
+row 12 & 187 & 164 & 76  \\
+row 11 & 208 & \textbf{255} & 183 \\
+row 10 & 68  & 159 & 222 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{The Pipeline Knows When It Does Not Know}
+The ring's centre, raw $(4.8, 1.6)$, is surrounded by training data on every side but contains none. The stored model answers \textsc{unknown} there. Its cell stores 0 in all three tables, below $\tau$, so line~8 of Algorithm~\ref{alg:lookup} returns before any class is reported. That is the correct answer: no class was ever observed at that location.
+
+The same test fires across most of the plane. 127 of the 256 grid cells (49.6\%) have every class below $\tau$. Without the threshold, those cells would still produce a label. Where all three bytes are 0, $\arg\max$ falls back to the first class, so half the feature space, the ring's centre included, would be confidently reported as the lower crescent. An accuracy score computed only on points drawn from the three shapes would never reveal this, because such points never land in those cells. The reject region shows up only when the model is queried where it has no data, which is exactly what a deployed device will eventually do.
+
+\subsection{The Stored Model Holds on Unseen Data}
+\label{sec:test}
+The test set was read once, after $h$, $G$, the storage format and $\tau$ were frozen. The data have no ground-truth labels, since DBSCAN invented the classes, so the question held-out data can answer is whether the cheap shipped model makes the same decision as the expensive research artifact. Each of the 206 test points was classified twice: by the continuous KDE maps, each divided by its own peak, and by nearest-cell lookup into the stored \texttt{uint8} tables. Both used the same $\tau$.
+
+The two agree on all 206 points (100\%). Table~\ref{tab:confusion} shows the agreement is not trivial: all three classes and the reject case are represented. 6 test points fall where every class is below $\tau$, and both models answer \textsc{unknown} for all six. Section~\ref{sec:storage} showed that storage costs one byte per cell and at most 0.195\% of peak, and that the grid is the coarser approximation. On data the model never saw, neither approximation changed a single decision. A memory saving that costs nothing on held-out data is a low-risk one to adopt.
+
+\begin{table}[!bt]
+\centering
+\caption{Test-set confusion, 206 held-out points. Rows: continuous KDE decision. Columns: stored \texttt{uint8} nearest-cell decision. Every point lies on the diagonal.}
+\label{tab:confusion}
+\begin{tabularx}{\linewidth}{@{}X r r r r@{}}
+\toprule
+Continuous $\backslash$ stored & c0 & c1 & c2 & unknown \\
+\midrule
+class 0 & 69 & 0  & 0  & 0 \\
+class 1 & 0  & 68 & 0  & 0 \\
+class 2 & 0  & 0  & 63 & 0 \\
+unknown & 0  & 0  & 0  & 6 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Agreement is not correctness, and this result should be read narrowly. Because the data are synthetic, the generator records which shape each test point came from: 189 were drawn from the three shapes and 17 from the uniform background. Both models assigned a class to 200 points, so at least 11 of the 17 background points (about two thirds) received a class label instead of \textsc{unknown}. Most land close enough to a shape that its density there is above $\tau$, and both models make the same error. Test agreement shows the stored model is a faithful copy of the continuous one. It does not show that either one is right.
+
+%=====================================================================
+\section{Limitations and Remaining Uncertainty}
+\label{sec:limits}
+%=====================================================================
+% TODO
+
+\end{document}

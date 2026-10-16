@@ -1,18 +1,19 @@
 /*
 File:
-classify_serial.ino
+classify.ino
 
 Description:
-Part 5 -- on-device inference on the ESP32, reported over serial.
+Part 4 -- on-device inference on the ESP32, reported on serial AND LEDs.
 Every sample: read raw UV and IR, apply the same EMA filter used during
-collection, scale with SCALE_BOUNDS, find the grid cell, read one byte per
-class from CLASS_TABLE, and print the winning class -- or UNKNOWN when
-even the winner is below REJECT_TAU.
+collection, take log1p, scale with SCALE_BOUNDS, find the grid cell, read
+one byte per class from CLASS_TABLE and take the winner -- or UNKNOWN when
+even the winner is below REJECT_TAU. The result is printed on serial and
+shown on one LED per class (plus one for UNKNOWN); exactly one is lit.
 
 It also measures what the report has to compare against the predicted
 footprint: at start-up it prints the model's size and where it sits in
 memory, the free heap and stack, and the average time per query; every
-line then carries that query's own time.
+serial line then carries that query's own time.
 
 Validation: send L:<label> (the same command as data_collection_UPDATED.ino)
 while holding the sensor under a known light, to record a fresh held-out
@@ -20,21 +21,33 @@ batch as CSV rows, each with the predicted class next to the true label.
 
 Note:
 - model.h is written by src/generate_model_header.py; do not edit it.
-- Board: ESP32 Dev Module. Libraries: Adafruit TSL2591, Adafruit Unified
-  Sensor. Wiring is the same as data_collection_UPDATED.ino.
+  It must sit in the same folder as this file: classify/classify.ino and
+  classify/model.h.
+- Board: ESP32 Dev Module (DevKit V1). Libraries: Adafruit TSL2591,
+  Adafruit Unified Sensor. Sensor wiring as in data_collection_UPDATED.ino.
 - Works with the Waveshare TSL25911 board: same TSL2591 chip, I2C address
   0x29 and chip ID 0x50, which is all the Adafruit library checks.
   Waveshare VCC -> 3V3, GND -> GND, SDA -> GPIO21, SCL -> GPIO22; INT unused.
+- UV: GUVA-S12SD OUT -> GPIO34 (ADC1, so it keeps working with WiFi on).
+- LEDs, each GPIO -> 220-330 ohm resistor -> LED anode; cathode -> GND:
+    D32 shade   D33 LED   D25 fluorescent   D26 sun   D27 UNKNOWN
 - Serial Monitor at 115200 baud.
-    untagged line:  uv, ir -> class  (time)
+    untagged line:  UV, IR -> class  (time)
     L:<label> rows: uv,ir,predicted,label,us   (send L: to stop)
+- Errors (sensor missing, or a model class with no LED): message on
+  serial, then all five LEDs blink together.
 
 ___________________________________________________
 Author      Date                Comment
-Gib M.      Oct. 15th, 2026     rev 1
+Gib M.      Oct. 15th, 2026     rev 1 -- classify_serial.ino and
+                                classify_led.ino, separate sketches.
+Gib M.      Oct. 16th, 2026     rev 2 -- merged into one sketch reporting
+                                on serial and LEDs; saturation check uses
+                                the 100 ms count ceiling.
 */
 #include <Wire.h>
 #include <math.h>
+#include <string.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_TSL2591.h>
 #include "model.h"
@@ -52,11 +65,50 @@ const int SCL_PIN = 22;
 const float ALPHA = 0.2f;                      // EMA smoothing factor
 const unsigned long SAMPLE_INTERVAL_MS = 100;  // ~10 Hz, as in collection
 
+// At 100 ms integration each TSL2591 channel tops out at 36863 counts, not
+// 65535, so that is where saturation shows up.
+const uint16_t TSL_MAX_COUNT = 36863;
+
 float uvFiltered = -1;  // -1 = "not yet initialized"
 float irFiltered = -1;
 unsigned long lastSampleTime = 0;
 
 String trueLabel = "";  // empty = not recording a held-out batch
+
+// --- LED display -------------------------------------------------------------
+// GPIO 32, 33, 25, 26, 27 are consecutive on the DevKit's header and are
+// all safe outputs (none is a boot strapping pin). Ordered dimmest to
+// brightest light, so the lit LED moves along the row with the light.
+struct ClassLed {
+  const char* name;
+  int pin;
+};
+const ClassLed CLASS_LEDS[] = {
+  {"shade", 32}, {"LED", 33}, {"fluorescent", 25}, {"sun", 26},
+};
+const int UNKNOWN_LED_PIN = 27;
+
+// LED pin for each class index, looked up by name: the cluster numbers in
+// model.h can change when the model is rebuilt, the names should not.
+int ledPin[NUM_CLASSES];
+
+void showClass(int c) {
+  for (int k = 0; k < NUM_CLASSES; k++) {
+    digitalWrite(ledPin[k], k == c ? HIGH : LOW);
+  }
+  digitalWrite(UNKNOWN_LED_PIN, c < 0 ? HIGH : LOW);
+}
+
+// Error display: print why, then blink every LED forever.
+void failForever(const char* message) {
+  Serial.print("# ERROR: ");
+  Serial.println(message);
+  for (bool on = true;; on = !on) {
+    for (const ClassLed& led : CLASS_LEDS) digitalWrite(led.pin, on);
+    digitalWrite(UNKNOWN_LED_PIN, on);
+    delay(250);
+  }
+}
 
 // --- The classifier (steps 3 to 8) -------------------------------------------
 // Returns the class index, or -1 for unknown.
@@ -126,7 +178,7 @@ void benchmark() {
   volatile int sink = 0;  // stops the compiler from dropping the calls
   uint32_t t0 = ESP.getCycleCount();
   for (int i = 0; i < N; i++) {
-    float uv = (i % 100) * 40.0f;          // 0 .. 3960
+    float uv = (i % 100) * 40.0f;            // 0 .. 3960
     float ir = 100.0f + (i / 100) * 320.0f;  // 100 .. 31780
     sink += classify(uv, ir);
   }
@@ -138,25 +190,36 @@ void benchmark() {
 }
 
 // --- Set-up ------------------------------------------------------------------
-void configureTSL2591() {
-  tsl.setGain(TSL2591_GAIN_MED);
-  tsl.setTiming(TSL2591_INTEGRATIONTIME_100MS);
-}
-
 void setup() {
   Serial.begin(115200);
+
+  // LEDs first, so an error can be shown on them.
+  for (const ClassLed& led : CLASS_LEDS) pinMode(led.pin, OUTPUT);
+  pinMode(UNKNOWN_LED_PIN, OUTPUT);
+
+  // Match each model class to its LED by name. A name with no LED
+  // (model rebuilt with new classes) is an error.
+  for (int c = 0; c < NUM_CLASSES; c++) {
+    ledPin[c] = -1;
+    for (const ClassLed& led : CLASS_LEDS) {
+      if (strcmp(led.name, CLASS_NAMES[c]) == 0) ledPin[c] = led.pin;
+    }
+    if (ledPin[c] < 0) failForever("a class in model.h has no LED; update CLASS_LEDS.");
+  }
+
   analogReadResolution(12);  // ESP32 ADC: 0-4095
   Wire.begin(SDA_PIN, SCL_PIN);
-
   if (!tsl.begin()) {
-    Serial.println("# ERROR: TSL2591 not found. Check wiring (SDA=21, SCL=22) and power.");
-    while (1) { delay(1000); }
+    failForever("TSL2591 not found. Check wiring (SDA=21, SCL=22) and power.");
   }
-  configureTSL2591();
+  tsl.setGain(TSL2591_GAIN_MED);
+  tsl.setTiming(TSL2591_INTEGRATIONTIME_100MS);
 
   benchmark();
   reportFootprint();
   Serial.println("# Ready. Send L:<label> to record a held-out batch, L: to stop.");
+
+  showClass(-1);  // nothing known until the first sample
 }
 
 // --- Main loop (steps 1, 2 and 9) --------------------------------------------
@@ -174,8 +237,11 @@ void loop() {
   uint32_t lum = tsl.getFullLuminosity();  // ir<<16 | full
   uint16_t full = lum & 0xFFFF;
   uint16_t ir = lum >> 16;
-  if (full == 0xFFFF || ir == 0xFFFF) {
+  if (full >= TSL_MAX_COUNT || ir >= TSL_MAX_COUNT) {
     Serial.println("# WARNING: TSL2591 saturated.");
+  }
+  if (rawUV >= 4095) {
+    Serial.println("# WARNING: UV ADC at its 4095 ceiling.");
   }
   int rawIR = ir;
 
@@ -194,6 +260,8 @@ void loop() {
   int c = classify(uvFiltered, irFiltered);
   float us = cyclesToUs(ESP.getCycleCount() - t0);
 
+  // Report on both outputs.
+  showClass(c);
   if (trueLabel.length() > 0) {
     // CSV row for the held-out batch: uv,ir,predicted,label,us
     Serial.printf("%.2f,%.2f,%s,%s,%.2f\n", uvFiltered, irFiltered,
