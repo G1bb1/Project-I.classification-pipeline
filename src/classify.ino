@@ -34,6 +34,7 @@ Note:
 - Serial Monitor at 115200 baud.
     untagged line:  UV, IR -> class  (time)
     L:<label> rows: uv,ir,predicted,label,us   (send L: to stop)
+    R toggles rows: raw_uv,raw_ir,filt_uv,filt_ir,predicted
 - Errors (sensor missing, or a model class with no LED): message on
   serial, then all five LEDs blink together.
 
@@ -43,7 +44,8 @@ Gib M.      Oct. 15th, 2026     rev 1 -- classify_serial.ino and
                                 classify_led.ino, separate sketches.
 Gib M.      Oct. 16th, 2026     rev 2 -- merged into one sketch reporting
                                 on serial and LEDs; saturation check uses
-                                the 100 ms count ceiling.
+                                the 100 ms count ceiling; R command streams
+                                raw vs filtered readings.
 */
 #include <Wire.h>
 #include <math.h>
@@ -74,6 +76,7 @@ float irFiltered = -1;
 unsigned long lastSampleTime = 0;
 
 String trueLabel = "";  // empty = not recording a held-out batch
+bool rawMode = false;   // R toggles: stream raw and filtered side by side
 
 // --- LED display -------------------------------------------------------------
 // GPIO 32, 33, 25, 26, 27 are consecutive on the DevKit's header and are
@@ -217,7 +220,8 @@ void setup() {
 
   benchmark();
   reportFootprint();
-  Serial.println("# Ready. Send L:<label> to record a held-out batch, L: to stop.");
+  Serial.println("# Ready. Send L:<label> to record a held-out batch, L: to stop;");
+  Serial.println("# send R to toggle raw-vs-filtered streaming.");
 
   showClass(-1);  // nothing known until the first sample
 }
@@ -262,7 +266,11 @@ void loop() {
 
   // Report on both outputs.
   showClass(c);
-  if (trueLabel.length() > 0) {
+  if (rawMode) {
+    // Filter evidence: CSV row raw_uv,raw_ir,filt_uv,filt_ir,predicted
+    Serial.printf("%d,%d,%.2f,%.2f,%s\n", rawUV, rawIR, uvFiltered,
+                  irFiltered, nameOf(c));
+  } else if (trueLabel.length() > 0) {
     // CSV row for the held-out batch: uv,ir,predicted,label,us
     Serial.printf("%.2f,%.2f,%s,%s,%.2f\n", uvFiltered, irFiltered,
                   nameOf(c), trueLabel.c_str(), us);
@@ -278,6 +286,14 @@ void handleSerialCommands() {
   if (!Serial.available()) return;
   String line = Serial.readStringUntil('\n');
   line.trim();
+
+  // R: toggle raw-vs-filtered streaming (the filter-evidence capture).
+  if (line == "R") {
+    rawMode = !rawMode;
+    Serial.println(rawMode ? "# raw_uv,raw_ir,filt_uv,filt_ir,predicted"
+                           : "# Raw streaming off.");
+    return;
+  }
   if (!line.startsWith("L:")) return;
 
   String newLabel = line.substring(2);
