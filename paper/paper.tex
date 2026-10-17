@@ -10,7 +10,7 @@
 \usepackage{hyperref}       % load last
 
 % paper.tex lives in paper/, so ../ goes up to the project root. Figures are
-% included as Sensor/figures/<name> or sim/figures/<name>, because the two
+% included as sensor/figures/<name> or sim/figures/<name>, because the two
 % runs use the same file names.
 \graphicspath{{../outputs/}}
 
@@ -77,12 +77,12 @@ The pipeline fits this setting for three reasons. The flash budget is small and 
 %=====================================================================
 
 \subsection{Hardware}
-The prototype is an ESP32 DevKit (240\,MHz, 4\,MB flash) with two sensors (Fig.~\ref{fig:wiring}, Fig.~\ref{fig:photo}). UV is read from a GUVA-S12SD module (Octopus board) on GPIO34, an ADC1 pin, with 12-bit resolution. The IR channel deviates from the assignment's analog photodiode. The specified EPD-712 photodiode produced only millivolt-level signals through the 10\,k$\Omega$ divider under indoor light, which falls in the noisiest region of the ESP32's ADC; amplifying it would have required an additional transimpedance stage. On the instructor's recommendation, IR is instead read from a Waveshare TSL25911 (TSL2591) over I$^2$C. It integrates and digitises the photodiode current on-chip. Its IR-only channel is used, at medium gain and 100\,ms integration. The firmware reports each decision over serial and on one LED per class.
+The prototype is an ESP32 DevKit (240\,MHz, 4\,MB flash) with two sensors (Fig.~\ref{fig:wiring}, Fig.~\ref{fig:photo}). UV is read from a GUVA-S12SD module (Octopus board) on GPIO34, an ADC1 pin, with 12-bit resolution. The IR channel deviates from the assignment's analog photodiode. The specified EPD-712 photodiode produced only millivolt-level signals through the 10\,k$\Omega$ divider under indoor light, which falls in the noisiest region of the ESP32's ADC; amplifying it would have required an additional transimpedance stage. On the instructor's recommendation, IR is instead read from a Waveshare TSL25911 (TSL2591) over I$^2$C. It integrates and digitises the photodiode current on-chip. Its IR-only channel is used, at medium gain and 100\,ms integration. Each decision is reported over serial. The firmware can also drive one LED per class plus one for \textsc{unknown}, but these were not populated on the prototype.
 
 \begin{figure}[!t]
 \centering
-\includegraphics[width=\columnwidth]{Sensor/figures/wiring.pdf}
-\caption{Prototype wiring. UV is read on GPIO34 (ADC1), IR over I$^2$C (SDA GPIO21, SCL GPIO22); both sensors run from 3.3\,V. GPIO32, 33, 25, 26 and 27 drive one LED per class plus \textsc{unknown}.}
+\includegraphics[width=\columnwidth]{sensor/figures/wiring.pdf}
+\caption{Prototype wiring. UV is read on GPIO34 (ADC1), IR over I$^2$C (SDA GPIO21, SCL GPIO22); both sensors run from 3.3\,V. The dashed LED outputs on GPIO32, 33, 25, 26 and 27 are supported by the firmware but not fitted on the prototype; results are reported over serial.}
 \label{fig:wiring}
 \end{figure}
 
@@ -97,7 +97,7 @@ Indoors, UV reads exactly 0, so shade, LED and fluorescent are separated by IR a
 
 \begin{figure}[!t]
 \centering
-\includegraphics[width=\columnwidth]{Sensor/figures/log_vs_linear.pdf}
+\includegraphics[width=\columnwidth]{sensor/figures/log_vs_linear.pdf}
 \caption{Scaled IR of the 1440 training readings by true condition, with the 16 grid rows marked. Left: linear scaling puts shade, LED and fluorescent in row~0. Right: $\log(1+x)$ separates them into rows 0--3.}
 \label{fig:logscale}
 \end{figure}
@@ -166,7 +166,7 @@ Fig.~\ref{fig:stored} shows the complete shipped model. The four classes occupy 
 
 \begin{figure*}[!t]
 \centering
-\includegraphics[width=0.85\textwidth]{Sensor/figures/class_surfaces_discretized.pdf}
+\includegraphics[width=0.85\textwidth]{outputs/sensor/figures/class_surfaces_discretized.pdf}
 \caption{The shipped model: one $16\times16$ \texttt{uint8} table per class, 1024 bytes in total. Classes 0--3 are shade, sun, fluorescent and LED. The three indoor classes sit in column~0 (UV $=0$), separated only by IR row.}
 \label{fig:stored}
 \end{figure*}
@@ -177,7 +177,7 @@ Fig.~\ref{fig:filter} records 22\,s of raw and filtered IR under fluorescent lig
 
 \begin{figure}[!t]
 \centering
-\includegraphics[width=\columnwidth]{Sensor/figures/raw_vs_filtered.pdf}
+\includegraphics[width=\columnwidth]{sensor/figures/raw_vs_filtered.pdf}
 \caption{Raw and EMA-filtered IR under fluorescent light, with seven hand passes over the sensor. Dashed lines are the grid-row boundaries between classes. The strip shows the class the device reported.}
 \label{fig:filter}
 \end{figure}
@@ -230,7 +230,7 @@ Fig.~\ref{fig:photo} shows the prototype. A video of live classification is avai
 
 \begin{figure}[!t]
 \centering
-\includegraphics[width=0.8\columnwidth]{Sensor/figures/board_photo.jpg}
+\includegraphics[width=0.8\columnwidth]{sensor/board_photo.jpg}
 \caption{The prototype: ESP32 DevKit on the breadboard, the GUVA-S12SD UV board (top right) and the TSL25911 IR sensor (bottom).}
 \label{fig:photo}
 \end{figure}
