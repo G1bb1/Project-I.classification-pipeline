@@ -28,6 +28,17 @@ Two datasets, chosen by `DATASET` in `src/pipeline_common.py`:
 - `src/<stage>.py`: one script per Part, run top-to-bottom. `run_all.py` runs
   them all via `runpy`. All paths are relative to `src/`, so run from there.
 - `src_original/`: backup of `src/` before any sensor edits. Do not modify.
+- `src/generate_model_header.py` (Part 3) writes `model.h` in the
+  instructor's layout (`GRID_N`, `NUM_CLASSES`, `CLASS_TABLE ... PROGMEM`,
+  `SCALE_BOUNDS` = xmin, xmax, ymin, ymax, `CLASS_NAMES`, `REJECT_TAU`) to
+  `outputs/<DATASET>/` and, in sensor mode, into each sketch folder in `src/`.
+  `CLASS_NAMES` (cluster number -> name) lives in `pipeline_common.py`.
+- `src/classify_serial/` and `src/classify_led/` (Part 5): ESP32
+  inference sketches. Sensor set-up and EMA filter must stay identical to
+  the peer's `data_collection_UPDATED.ino` (repo root). LEDs on GPIO
+  32/33/25/26/27 (shade/LED/fluorescent/sun/unknown), all on the GPIO34
+  header. `L:<label>` in the serial sketch logs a held-out batch as
+  `uv,ir,predicted,label,us` rows.
 - `datasets/<DATASET>/`: inputs. `outputs/<DATASET>/`: `labels.csv`,
   `surfaces.npz`, `figures/*.pdf`.
 - Sensor input is `datasets/sensor/data_complete_no_labels.csv`, the peer's
@@ -62,6 +73,19 @@ There are no unit tests. The regression check is to run `sim` mode on a
 `dataset.csv` numerically (`np.loadtxt`, `np.load`) against `outputs/sim/` and
 `datasets/sim/`. They must match exactly. Rerunning in place only rewrites
 PDF timestamps.
+
+Firmware: `arduino-cli` (in `C:\Program Files\Arduino CLI`) has the esp32
+core and the Adafruit TSL2591 library. Compile check, with the build kept
+out of the repo:
+
+```
+arduino-cli compile --fqbn esp32:esp32:esp32 --build-path <scratch> src/classify_serial
+```
+
+The ELF's symbols (`xtensa-esp-elf-nm -S -C`, under
+`Arduino15/packages/esp32/tools/esp-x32/`) show where the model lands:
+`CLASS_TABLE` in DROM (0x3F4...), so it costs no SRAM. `SCALE_BOUNDS` has no
+symbol, because the compiler folds it into `classify()`.
 
 ## Conventions
 

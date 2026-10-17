@@ -68,6 +68,7 @@ python cluster_dbscan.py     # or any single stage
 | 4 | `classify_skeleton.py` | hand-written lookup (exercise) |
 | 4 | `classify_point.py` | `figures/decision_map.pdf` |
 | 4 | `evaluate_test.py` | test-set agreement and confusion table |
+| 3 | `generate_model_header.py` | `model.h` (also copied into both sketch folders in sensor mode) |
 
 The stages must run in this order the first time: later ones read the
 `labels.csv` and `surfaces.npz` written by earlier ones.
@@ -81,10 +82,42 @@ The stages must run in this order the first time: later ones read the
 
 `np.loadtxt` skips the `#` lines automatically.
 
+## On the ESP32 (Part 5)
+
+`generate_model_header.py` writes the model as `model.h`: one `uint8`
+table per class in `PROGMEM`, the scaling bounds, the class names and the
+reject threshold. That is 4 x 16 x 16 + 16 = 1040 bytes for the sensor
+model. Two sketches run it:
+
+- `src/classify_serial/`: prints each reading and its class over
+  serial (115200 baud). At start-up it reports the model's size, where it
+  sits in memory, the free heap and stack, and the average time per query.
+- `src/classify_led/`: lights one of five LEDs, all on the same
+  header as the UV input (GPIO34): D32 shade, D33 LED, D25 fluorescent,
+  D26 sun, D27 unknown. Wire each as GPIO -> 220-330 ohm resistor -> LED ->
+  GND.
+
+Both read the sensor exactly as the peer's collection sketch
+(`data_collection_UPDATED.ino`) does: same gain, integration time, EMA
+filter and 10 Hz rate. The model only works on readings taken the same way.
+
+Board: ESP32 Dev Module. Libraries: Adafruit TSL2591, Adafruit Unified
+Sensor. The Adafruit library also drives the Waveshare TSL25911 Light Sensor
+board: it's the same TSL2591 chip, at the same I2C address (0x29) and with
+the same chip ID (0x50) the library checks for.
+
+**Validating on a fresh held-out batch:** run `classify_serial`, then under
+each light send `L:<label>` (`L:shade`, `L:LED`, `L:fluorescent`, `L:sun`)
+and `L:` to stop. Each reading is then printed as a CSV row
+`uv,ir,predicted,label,us`, so the log shows the predicted class next to
+the true label, along with the time each query took.
+
 ## Project layout
 
 ```
 src/                  pipeline stages, pipeline_common.py (shared settings), run_all.py
+  classify_serial/    ESP32 inference, reported over serial (+ its model.h)
+  classify_led/       ESP32 inference, reported on LEDs (+ its model.h)
 src_original/         backup copy of src/ before the sensor-data edits
 datasets/
   sim/                dataset.csv (synthetic points)
@@ -96,7 +129,8 @@ datasets/
                         dataset.csv                  written by Part 0 from the above
 outputs/
   sim/                labels.csv, surfaces.npz, figures/*.pdf
-  sensor/             labels.csv, surfaces.npz, figures/*.pdf
+  sensor/             labels.csv, surfaces.npz, model.h, figures/*.pdf
+data_collection_UPDATED.ino   peer's ESP32 data-collection sketch
 paper/                LaTeX report
 ```
 
@@ -133,6 +167,14 @@ assistant) working directly in the repository:
    that `sim` mode still reproduces the original results exactly (same
    labels, same class maps, same dataset), and that `sensor` mode finds the
    four light conditions.
+7. **Moving to the ESP32.** Claude checked whether DBSCAN could separate the
+   classes without the log transform: with linear scaling no `eps` works,
+   because the gaps between indoor classes are smaller than the spacing
+   inside the sun cluster. It then wrote `generate_model_header.py` in my
+   instructor's `model.h` layout, plus serial and LED inference sketches
+   built on my peer's collection code. It compiled both sketches with `arduino-cli` and
+   checked that the header gives the same answers as the Python lookup on
+   every point.
 
 I reviewed the changes and decided what to keep and commit.
 
