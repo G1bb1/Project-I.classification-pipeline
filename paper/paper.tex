@@ -73,10 +73,6 @@ The \emph{online} path, Algorithm~\ref{alg:lookup}, is what this paper proposes.
 
 Two choices in Algorithm~\ref{alg:lookup} are deliberate. First, it uses nearest-cell lookup ($K$ reads) rather than bilinear blending of the four surrounding cells ($4K$ reads). On the held-out query in Section~\ref{sec:query}, both lookups return the same class with the same distribution. Bilinear blending would move the decision boundary by a fraction of a cell, but in this data the classes never touch, so that boundary is only the reject edge. Four times the reads is not worth paying for that. Second, the reject test on line~8 is not optional: without it, the algorithm returns a confident-looking label at every point in the plane, including regions no training data ever reached (Section~\ref{sec:evidence}).
 
-%=====================================================================
-\section{Application}
-%=====================================================================
-% TODO: one specific device. Flash budget, why no labels, why classes aren't round.
 
 %=====================================================================
 \section{Method and Setup}
@@ -321,11 +317,5 @@ unknown & 0  & 0  & 0  & 6 \\
 \end{table}
 
 Agreement is not correctness, and this result should be read narrowly. Because the data are synthetic, the generator records which shape each test point came from: 189 were drawn from the three shapes and 17 from the uniform background. Both models assigned a class to 200 points, so at least 11 of the 17 background points (about two thirds) received a class label instead of \textsc{unknown}. Most land close enough to a shape that its density there is above $\tau$, and both models make the same error. Test agreement shows the stored model is a faithful copy of the continuous one. It does not show that either one is right.
-
-%=====================================================================
-\section{Limitations and Remaining Uncertainty}
-\label{sec:limits}
-%=====================================================================
-% TODO
 
 \end{document}
