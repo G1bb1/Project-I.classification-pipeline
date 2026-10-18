@@ -1,37 +1,66 @@
-# classification-pipeline
+# classification-pipeline: On-Device Light Classifier (v2.0)
 
-A step-by-step pipeline that goes from **unlabeled 2-D data** to a **tiny
-lookup-table classifier** that fits in a few hundred bytes of flash, as an R&D
-step toward running it on an ESP32 / ATtiny prototype.
+A staged machine-learning pipeline that turns **unlabelled 2-D data** into a tiny classifier a microcontroller can run. DBSCAN discovers the classes, a Gaussian kernel density estimate (KDE) maps each one, and each map is stored as **one byte per cell** of a 16×16 grid. Classifying a reading then takes one byte read per class and a reject threshold, which answers **UNKNOWN** outside every learned region.
 
-1. **Discover classes** (Part 1): DBSCAN finds the clusters (k-means is shown
-   for contrast).
-2. **Model each class** (Part 2): a Gaussian KDE per class. The bandwidth is
-   chosen on a validation split.
-3. **Store as bytes** (Part 3): each class density is sampled on a 16x16 grid
-   and stored as `uint8`, so the whole model is `classes x 256` bytes plus the
-   scaling bounds.
-4. **Classify** (Part 4): transform and scale the query, look up its cell, pick
-   the class with the largest value. If even that value is below
-   `tau = 0.12`, answer **unknown**.
-5. **Evaluate** (Part 4): on the held-out test set, check how often the byte
-   lookup agrees with the full continuous KDE.
+| Release | Stage | Data |
+|---|---|---|
+| v1.0 (git tag `v1.0`) | Research (Lab 3) | Synthetic crescents, ring and noise, where the right answer is known, to validate the pipeline |
+| **v2.0** | **Deployment (Assignment 1)** | **Real UV/IR light-sensor readings; the lookup runs live on an ESP32** |
 
-## Two datasets
+v2.0 retrains the same pipeline on real readings of four lighting conditions (shade, LED, fluorescent, sun) and runs the classifier on an ESP32. The `sim` dataset is still in the repository, so v1.0's results can be reproduced with the same code.
 
-| `DATASET` | Data | Notes |
-|-----------|------|-------|
-| `sim` | Synthetic crescents + ring + noise (instructor's R&D setup) | The original results |
-| `sensor` | Real UV/IR readings under shade, LED, fluorescent and sun light, collected by a peer with physical components | Uses a `log1p` feature transform (see below) |
+## Pipeline
 
-**Why the sensor data needs a log transform:** IR ranges from about 130 (shade)
-to about 30,000 (sun), and UV reads 0 for every indoor source. With plain
-linear min-max scaling, shade, LED and fluorescent all land within 0.01 of each
-other, in the same grid cell, and DBSCAN merges them into one class. After
-`log1p`, the four light conditions form four separate clusters.
+**Offline** (runs once, on a workstation):
 
-Current sensor results: 4 clusters with no noise, one per light condition, and
-the uint8 lookup matches the continuous KDE on 100% of the 480 test points.
+1. **Transform and scale.** Sensor features go through `log1p`, then min-max scaling with the training range.
+2. **Split.** 60 / 20 / 20 into training, validation and test (fixed seed). Training builds the model, validation picks the bandwidth, and the test set is used once at the end.
+3. **Cluster.** DBSCAN (`eps = 0.06`, `min_samples = 8`) finds the classes in the training data.
+4. **Model.** A Gaussian KDE is fitted to each class and normalised to its own peak. The bandwidth is chosen on the validation split.
+5. **Store.** Each map is sampled on a 16×16 grid and stored as `uint8`.
+6. **Export.** `generate_model_header.py` writes everything the device needs to `model.h`.
+
+**Online** (on the ESP32, about 10 Hz):
+
+1. Read UV and IR, and apply the same EMA filter used during collection.
+2. Apply `log1p`, then scale with the stored bounds.
+3. Find the grid cell.
+4. Read one byte per class and keep the largest.
+5. Answer UNKNOWN if that byte is below `tau = 0.12` (31 of 255).
+
+## Hardware
+
+| Part | Connection |
+|---|---|
+| ESP32 DevKit V1 | — |
+| GUVA-S12SD UV sensor (Octopus board, analog) | OUT → GPIO34 (ADC1), V+ → 3V3, GND → GND |
+| Waveshare TSL25911 IR/light sensor (I²C, 0x29) | SDA → GPIO21, SCL → GPIO22, VCC → 3V3, GND → GND |
+| Optional status LEDs (not fitted on the prototype) | GPIO32 shade, GPIO33 LED, GPIO25 fluorescent, GPIO26 sun, GPIO27 UNKNOWN; each through a 220–330 Ω resistor to GND |
+
+**Why the TSL25911 and not a photodiode:** the assignment's EPD-712 photodiode with a 10 kΩ divider gave only millivolt-level signals under indoor light, in the noisiest part of the ESP32's ADC. On the instructor's recommendation, IR comes from the TSL25911 instead, which amplifies and digitises on-chip. The Adafruit TSL2591 library drives it: it's the same chip, at the same I²C address (0x29) and chip ID (0x50).
+
+## Why the sensor data needs `log1p`
+
+IR ranges from about 130 (shade) to about 30,000 (sun), and UV reads 0 for every indoor source. With plain linear min-max scaling, shade, LED and fluorescent all fall into **grid row 0**, and no byte table can separate them; DBSCAN finds only 2 clusters. After `log1p`, the indoor classes spread across rows 0–3, and DBSCAN finds the four conditions at every `eps` from 0.003 to 0.06. The device applies the same transform, because the bounds in `model.h` are in log units. `figures/log_vs_linear.pdf` shows both cases.
+
+## Results
+
+| | |
+|---|---|
+| DBSCAN vs. true labels (1440 training readings) | **4 / 4 conditions recovered exactly**, 0 noise |
+| Bandwidth (validation log-likelihood) | h = 0.03 |
+| Model size | 4 × 16² + 16 = **1040 bytes**, in flash (DROM), 0 B SRAM |
+| Stored vs. continuous model, desktop test split | **100%** (480 / 480) |
+| Grid cells answering UNKNOWN | 251 of 256 (98%) |
+| Time per query on the ESP32 | 4.28 µs benchmark, 12.65 µs median in the live loop |
+| Fresh held-out batch on the device (440 shade, 464 LED, 440 fluorescent) | **1344 / 1344 correct**, 100% agreement with the desktop model |
+| Sketch size / heap in use | 332,800 B of 4 MB flash / 43,572 B |
+
+**Known limitations** (full list in the paper):
+- **Sun was not tested on the device.**
+- **The EMA filter (α = 0.2) doesn't remove long glitches.** It keeps class levels, but doesn't suppress hand occlusions longer than about 0.3 s. On a 222-sample fluorescent capture with occlusions, 44 samples come out wrong with the EMA; holding the output for 5 samples would cut that to 11 (tested offline, not on the device).
+- **Single-session data.** All readings come from one place and one sitting, at a fixed distance.
+- **Readings below the training range clip to the edge cell.** So a covered sensor reads "shade", never UNKNOWN.
 
 ## Requirements
 
@@ -41,19 +70,23 @@ Python 3 with `numpy`, `scikit-learn` and `matplotlib`:
 pip install numpy scikit-learn matplotlib
 ```
 
+Firmware:
+- **Board:** ESP32 Dev Module.
+- **Libraries:** Adafruit TSL2591 and Adafruit Unified Sensor.
+
 ## Usage
 
 Choose the data in `src/pipeline_common.py`:
 
 ```python
-DATASET = "sensor"   # or "sim"
+DATASET = "sensor"   # or "sim" to reproduce v1.0
 ```
 
-Then, from `src/`, run everything at once or any stage on its own:
+Then, from `src/`, run every stage at once, or any stage on its own:
 
 ```
 cd src
-python run_all.py            # every stage, in order
+python run_all.py            # Parts 0 to 4, in order
 python cluster_dbscan.py     # or any single stage
 ```
 
@@ -65,119 +98,89 @@ python cluster_dbscan.py     # or any single stage
 | 2 | `kde_class_contours.py` | `surfaces.npz`, `figures/class_surfaces_continuous.pdf` |
 | 2b | `kde_total_surface.py` | `figures/total_distribution.pdf` |
 | 3 | `discretize_surfaces.py` | storage-cost table, `figures/class_surfaces_discretized.pdf` |
+| 3 | `generate_model_header.py` | `model.h` (in sensor mode, also copied to `src/classify/`) |
 | 4 | `classify_skeleton.py` | hand-written lookup (exercise) |
 | 4 | `classify_point.py` | `figures/decision_map.pdf` |
 | 4 | `evaluate_test.py` | test-set agreement and confusion table |
-| 3 | `generate_model_header.py` | `model.h` (also copied into both sketch folders in sensor mode) |
 
-The stages must run in this order the first time: later ones read the
-`labels.csv` and `surfaces.npz` written by earlier ones.
+The stages must run in this order the first time, because later ones read the `labels.csv` and `surfaces.npz` written by earlier ones. The bandwidth printed by `bandwidth_sweep.py` is copied into `BANDWIDTH` in `pipeline_common.py` by hand.
 
-### Output files
+Two report figures are made separately, in sensor mode only, because they also need the labelled data or a capture from the device. `run_all.py` doesn't run them:
 
-- `labels.csv`: one DBSCAN cluster per training point (`-1` = noise). It starts
-  with a `#` line recording the DBSCAN settings.
-- `surfaces.npz`: one peak-normalised map per class, with keys `c0`, `c1`, ...
-- `dataset.csv`: the raw points, with the column names on a `#` header line.
+| Script | Reads | Output |
+|--------|-------|--------|
+| `plot_log_vs_linear.py` | `data_complete.csv` (labels used for grouping only) | `figures/log_vs_linear.pdf` |
+| `plot_raw_vs_filtered.py` | `data_raw_vs_filtered.csv` (ESP32 `R` capture) | `figures/raw_vs_filtered.pdf` and the filter error counts |
 
-`np.loadtxt` skips the `#` lines automatically.
+## On the ESP32
 
-## On the ESP32 (Part 5)
+`src/classify/classify.ino` runs the model from `src/classify/model.h`. Open the `src/classify/` folder in the Arduino IDE, or compile from the repository root with:
 
-`generate_model_header.py` writes the model as `model.h`: one `uint8`
-table per class in `PROGMEM`, the scaling bounds, the class names and the
-reject threshold. That is 4 x 16 x 16 + 16 = 1040 bytes for the sensor
-model. Two sketches run it:
+```
+arduino-cli compile --fqbn esp32:esp32:esp32 src/classify
+```
 
-- `src/classify_serial/`: prints each reading and its class over
-  serial (115200 baud). At start-up it reports the model's size, where it
-  sits in memory, the free heap and stack, and the average time per query.
-- `src/classify_led/`: lights one of five LEDs, all on the same
-  header as the UV input (GPIO34): D32 shade, D33 LED, D25 fluorescent,
-  D26 sun, D27 unknown. Wire each as GPIO -> 220-330 ohm resistor -> LED ->
-  GND.
+The sketch reports each reading and its class over serial at 115200 baud, and also drives the optional LEDs. At start-up, it prints the model's size, where it sits in memory, the free heap and stack, and the average time per query. If the TSL2591 isn't found, it prints an error and blinks all five LEDs.
 
-Both read the sensor exactly as the peer's collection sketch
-(`data_collection_UPDATED.ino`) does: same gain, integration time, EMA
-filter and 10 Hz rate. The model only works on readings taken the same way.
+It reads the sensors exactly as the collection sketch (`data_collection_UPDATED.ino`, see Credit) does: same TSL2591 gain (medium) and integration time (100 ms), same EMA filter (α = 0.2), same 10 Hz rate. **The model only works on readings taken the same way.**
 
-Board: ESP32 Dev Module. Libraries: Adafruit TSL2591, Adafruit Unified
-Sensor. The Adafruit library also drives the Waveshare TSL25911 Light Sensor
-board: it's the same TSL2591 chip, at the same I2C address (0x29) and with
-the same chip ID (0x50) the library checks for.
+Serial commands:
 
-**Validating on a fresh held-out batch:** run `classify_serial`, then under
-each light send `L:<label>` (`L:shade`, `L:LED`, `L:fluorescent`, `L:sun`)
-and `L:` to stop. Each reading is then printed as a CSV row
-`uv,ir,predicted,label,us`, so the log shows the predicted class next to
-the true label, along with the time each query took.
+| Send | Effect | Output rows |
+|---|---|---|
+| `L:<label>` (e.g. `L:shade`) | Record a held-out batch under a known light | `uv,ir,predicted,label,us` |
+| `L:` | Stop recording | — |
+| `R` | Toggle raw-vs-filtered streaming (filter evidence) | `raw_uv,raw_ir,filt_uv,filt_ir,predicted` |
+
+The recorded rows are saved as `datasets/sensor/data_esp_inference.csv` (held-out batches) and `datasets/sensor/data_raw_vs_filtered.csv` (`R` capture).
 
 ## Project layout
 
 ```
 src/                  pipeline stages, pipeline_common.py (shared settings), run_all.py
-  classify_serial/    ESP32 inference, reported over serial (+ its model.h)
-  classify_led/       ESP32 inference, reported on LEDs (+ its model.h)
-src_original/         backup copy of src/ before the sensor-data edits
+  classify/           ESP32 inference sketch: classify.ino + model.h (generated)
 datasets/
-  sim/                dataset.csv (synthetic points)
-  sensor/             peer's raw readings:
-                        data_<condition>.csv         one light condition each, labelled
-                        data_complete.csv            all four conditions, labelled
-                        data_complete_no_labels.csv  same readings, labels removed --
-                                                     the pipeline's input
-                        dataset.csv                  written by Part 0 from the above
+  sim/                dataset.csv                  synthetic points (Part 0)
+  sensor/             data_<condition>.csv         one light condition each, labelled
+                      data_complete.csv            all four conditions, labelled
+                      data_complete_no_labels.csv  same readings, labels removed --
+                                                   the pipeline's input
+                      dataset.csv                  written by Part 0 from the above
+                      data_esp_inference.csv       held-out batches recorded on the ESP32
+                      data_raw_vs_filtered.csv     raw and filtered capture (R command)
 outputs/
   sim/                labels.csv, surfaces.npz, figures/*.pdf
-  sensor/             labels.csv, surfaces.npz, model.h, figures/*.pdf
-data_collection_UPDATED.ino   peer's ESP32 data-collection sketch
-paper/                LaTeX report
+  sensor/             labels.csv, surfaces.npz, model.h, board_photo.jpg,
+                      figures/*.pdf (wiring.pdf included)
+paper/
+  paper.tex           v2.0 proof-of-concept report (ESP32); the v1.0 research
+                      paper is at the v1.0 tag
 ```
+
+`paper.tex` takes its figures from `outputs/`, so build it from inside `paper/`.
+
+## Proof of concept
+
+- **Video of live classification:** https://youtu.be/epPjHrj3CWY
+- **Prototype photo:** `outputs/sensor/board_photo.jpg`
+- **Wiring diagram:** `outputs/sensor/figures/wiring.pdf`
+
+## Credit
+
+The data-collection firmware (`data_collection_UPDATED.ino`, including its EMA filter and sensor settings) and the labelled sensor dataset come from Gianluca D'Altorio's repository: https://github.com/GianlucaDAltorio/data-collection
 
 ## How this was built with Claude Code
 
-This project was adapted together with Claude Code (Anthropic's AI coding
-assistant) working directly in the repository:
+This project was adapted together with Claude Code (Anthropic's AI coding assistant) working directly in the repository:
 
-1. **Understanding the code.** I asked Claude to explain the project. It read
-   every script, summarised the five-part pipeline, wrote a `CLAUDE.md`
-   (project notes Claude reads at the start of each session), and pointed out
-   problems: a crash in `generate_dataset.py`, the pipeline ignoring
-   `dataset.csv`, every script having to be run separately, and `BANDWIDTH`
-   being duplicated in three files.
-2. **Explaining the goal.** I explained that `src/` is my instructor's
-   simulated R&D setup for testing DBSCAN, that I now have real UV/IR sensor
-   data from a peer, and that the code was built entirely around the simulated
-   data.
-3. **Checking the data before coding.** Claude analysed the sensor CSVs first
-   and found the real reason the pipeline fails on them: with linear scaling,
-   three of the four light conditions fall into one grid cell. It compared
-   linear and `log1p` scaling under DBSCAN before changing any code.
-4. **Adapting the instructor's code.** I wanted the work to stay inside `src/`
-   with as few changes as possible, plus a backup (`src_original/`). Claude
-   added a `DATASET` switch, the log transform and per-dataset paths to
-   `pipeline_common.py`. It made each stage read its paths and bandwidth from
-   there, and added `run_all.py` to run every stage with one command.
-5. **Organising files and comments.** I asked for a cleaner layout. Claude
-   moved inputs into `datasets/<DATASET>/` and results into
-   `outputs/<DATASET>/`, and added self-describing `#` header lines to the CSV
-   outputs. It merged the instructor's docstrings into my file headers and
-   rewrote unevenly commented files so every stage explains what it does.
-6. **Verification.** After each change, Claude re-ran the pipeline. It checked
-   that `sim` mode still reproduces the original results exactly (same
-   labels, same class maps, same dataset), and that `sensor` mode finds the
-   four light conditions.
-7. **Moving to the ESP32.** Claude checked whether DBSCAN could separate the
-   classes without the log transform: with linear scaling no `eps` works,
-   because the gaps between indoor classes are smaller than the spacing
-   inside the sun cluster. It then wrote `generate_model_header.py` in my
-   instructor's `model.h` layout, plus serial and LED inference sketches
-   built on my peer's collection code. It compiled both sketches with `arduino-cli` and
-   checked that the header gives the same answers as the Python lookup on
-   every point.
+1. **Explaining the goal.** I explained that `src/` is my instructor's simulated R&D setup for testing DBSCAN, that I now have real UV/IR sensor data from a peer, and that the code was built entirely around the simulated data.
+2. **Checking the data before coding.** Claude analysed the sensor CSVs first and found the real reason the pipeline fails on them: with linear scaling, three of the four light conditions fall into one grid cell. It compared linear and `log1p` scaling under DBSCAN before changing any code.
+3. **Adapting the instructor's code.** I wanted the work to stay inside `src/` with as few changes as possible. Claude added a `DATASET` switch, the log transform and per-dataset paths to `pipeline_common.py`, and made each stage read its settings from there. It also added `run_all.py`, split inputs and results into `datasets/` and `outputs/`, and brought every file's comments into my header style.
+4. **Verification.** After each change, Claude re-ran the pipeline. It checked that `sim` mode still reproduces the original results exactly (same labels, same class maps, same dataset), and that `sensor` mode finds the four light conditions.
+5. **Deploying and testing on the ESP32.** Claude wrote `generate_model_header.py` in my instructor's `model.h` layout and an inference sketch built on my peer's collection code. It checked that the header gives the same answers as the Python lookup. I ran the sketch on the board and recorded fresh held-out batches and a raw-vs-filtered capture. Claude scored them against the desktop model, measured the filter's effect, and produced the figures and wiring diagram for the proof-of-concept report.
 
 I reviewed the changes and decided what to keep and commit.
 
 ## Author
 
-Gib M.
+Gib Macarine.

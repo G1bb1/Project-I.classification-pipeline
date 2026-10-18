@@ -23,12 +23,14 @@ Note:
 - Run from src/ (paths are relative to it), after kde_class_contours.py.
 - Reads outputs/<DATASET>/surfaces.npz; the bounds are recomputed from
   the training split, the same way every other stage gets them.
-- Writes outputs/<DATASET>/model.h; in sensor mode, also a copy into each
-  ESP32 sketch folder (src/classify_serial/, src/classify_led/).
+- Writes outputs/<DATASET>/model.h; in sensor mode, also a copy into the
+  ESP32 sketch folder (src/classify/).
 
 ___________________________________________________
 Author      Date                Comment
 Gib M.      Oct. 15th, 2026     rev 1
+Gib M.      Oct. 17th, 2026     rev 2 -- one sketch folder, src/classify/,
+                                after the serial and LED sketches merged.
 '''
 import math
 import os
@@ -39,9 +41,9 @@ from pipeline_common import (load_split_scaled, scale_features, quantize,
                              CLASS_NAMES, SURFACES_NPZ, OUT_DIR)
 
 MODEL_H = OUT_DIR + "model.h"
-# The ESP32 sketches each need their own copy: the Arduino IDE only
-# compiles files inside the sketch's folder.
-FIRMWARE_DIRS = ["classify_serial/", "classify_led/"]
+# The ESP32 sketch needs its own copy: the Arduino IDE only compiles files
+# inside the sketch's folder.
+FIRMWARE_DIRS = ["classify/"]
 
 data = load_split_scaled()
 lo, hi = data["bounds"]  # training bounds, in transformed (log1p) units

@@ -27,18 +27,21 @@ Two datasets, chosen by `DATASET` in `src/pipeline_common.py`:
   shared constants and helpers (transform/scale/split, grid, KDE, quantize).
 - `src/<stage>.py`: one script per Part, run top-to-bottom. `run_all.py` runs
   them all via `runpy`. All paths are relative to `src/`, so run from there.
-- `src_original/`: backup of `src/` before any sensor edits. Do not modify.
 - `src/generate_model_header.py` (Part 3) writes `model.h` in the
   instructor's layout (`GRID_N`, `NUM_CLASSES`, `CLASS_TABLE ... PROGMEM`,
   `SCALE_BOUNDS` = xmin, xmax, ymin, ymax, `CLASS_NAMES`, `REJECT_TAU`) to
-  `outputs/<DATASET>/` and, in sensor mode, into each sketch folder in `src/`.
+  `outputs/<DATASET>/` and, in sensor mode, into `src/classify/`.
   `CLASS_NAMES` (cluster number -> name) lives in `pipeline_common.py`.
-- `src/classify_serial/` and `src/classify_led/` (Part 5): ESP32
-  inference sketches. Sensor set-up and EMA filter must stay identical to
-  the peer's `data_collection_UPDATED.ino` (repo root). LEDs on GPIO
-  32/33/25/26/27 (shade/LED/fluorescent/sun/unknown), all on the GPIO34
-  header. `L:<label>` in the serial sketch logs a held-out batch as
-  `uv,ir,predicted,label,us` rows.
+- `src/classify/classify.ino`: the ESP32 inference sketch (serial and
+  LEDs in one; Arduino needs it in a folder of the same name). Sensor
+  set-up and EMA filter must stay identical to the peer's
+  `data_collection_UPDATED.ino` (in the peer's repo, not this one). LEDs on
+  GPIO 32/33/25/26/27 (shade/LED/fluorescent/sun/unknown), all on the
+  GPIO34 header. `L:<label>` logs a held-out batch as
+  `uv,ir,predicted,label,us` rows (saved as `data_esp_inference.csv`); `R`
+  toggles raw-vs-filtered rows (`data_raw_vs_filtered.csv`).
+- `plot_log_vs_linear.py`, `plot_raw_vs_filtered.py`: sensor-only report
+  figures, not in `run_all.py`.
 - `datasets/<DATASET>/`: inputs. `outputs/<DATASET>/`: `labels.csv`,
   `surfaces.npz`, `figures/*.pdf`.
 - Sensor input is `datasets/sensor/data_complete_no_labels.csv`, the peer's
@@ -46,9 +49,9 @@ Two datasets, chosen by `DATASET` in `src/pipeline_common.py`:
   `dataset_complete_unlabeled.csv`; the user wants it kept. `data_complete.csv`
   is the same readings plus a label column (used only by `pipeline/` to score
   accuracy).
-- `paper/paper.tex`: report (empty so far). `report.tex` and `reference.py`
-  are style samples from an earlier RC-circuit report, not part of the
-  pipeline.
+- `paper/paper.tex`: the v2.0 ESP32 proof-of-concept report
+  (`\graphicspath{{../outputs/}}`). The v1.0 research paper is at tag
+  `v1.0`.
 
 ### Not committed (the user keeps these local; do not mention them in README)
 
@@ -79,7 +82,7 @@ core and the Adafruit TSL2591 library. Compile check, with the build kept
 out of the repo:
 
 ```
-arduino-cli compile --fqbn esp32:esp32:esp32 --build-path <scratch> src/classify_serial
+arduino-cli compile --fqbn esp32:esp32:esp32 --build-path <scratch> src/classify
 ```
 
 The ELF's symbols (`xtensa-esp-elf-nm -S -C`, under
